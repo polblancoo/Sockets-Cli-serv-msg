@@ -1,61 +1,88 @@
+#[warn(unused_imports)]
 use async_std::prelude::*;
-use async_std::os::unix::net::UnixStream;
-use std::net::Shutdown;
-use async_std::io;
+use async_std::{os::unix::net::{UnixListener, UnixStream}, stream};
+use async_std::task;
+use async_std::fs;
+use std::str;
 use std::time::Duration;
+use std::net::Shutdown;
+use std::path::Path;
+
 mod read;
 use read::read_stream;
 
-#[async_std::main]
-async fn main() {
-    let socket_path="/tmp/rust.socket";
-    let mut stream = UnixStream::connect(socket_path).await.unwrap();
-    let address = stream.local_addr().unwrap();
-    print!("Local Unix Socket {:?}", address);
-    let per_address = stream.peer_addr().unwrap();
-    print!("Remote Unix Socket {:?}", per_address);
- 
-    //Lectura del string 
- //   let mut response =String::new();
- //   stream.read_to_string(&mut response  ).await.unwrap();
- //   println!("Mensaje desde server : {}", response);
-   
-   //lectura del stream
-    let stdin = io::stdin();
-    let mut line = String::new();
-    const usize:usize = 10;
-    let stop:u8 = b'\0';
+async fn handle_client(mut stream: UnixStream){
+    /*
+    Tres tareas principales
+    -enviar msg
+    - procesar msg
+    -recibir msg
+    */ 
+    println!("NUevo cliente {:?}", stream.peer_addr().unwrap());
+     stream.write_all(b"Hola mundo socket").await.unwrap();
+     stream.flush().await.unwrap();
 
+    // let mut received = String::new();
+     let mut buffer: [u8; 100] = [0;100];
+    const size:usize=10;
+    let stop: u8 = b'\0';
+    println!("Stop value {}", stop);
 
-
-    loop {
-        let msg = read_stream(&mut stream, usize, stop).await;
-
-        println!("Recibido desde el servidor {:?}", msg);
-
-
-        match stdin.read_line(&mut line).await{
-            Ok(size) => println!("Recibido input{}", size),
-            Err(err)=> eprintln!("Error input")
-        };
-
-        println!("Enviando a servidor {}", line);
-
-        match stream.write(line.as_bytes()).await{
-            Ok(s) => println!("Enviando {} bytes", s),
-            Err(err)=> eprintln!("Error al enviar")
-        };
-        //confirma que se envie todo 
-        stream.flush();
-
-        if &line == "END"{
-            println!("Cerrando cliente ...");
+     loop {
+        println!("Entrando al loop para este cliente ");
+        //funcion en el mod read.rs que le enviamos el stream de u8 y devuelve un string
+        let  txt = read_stream(&mut stream , size, stop).await;
+        println!("Recibido desde cliente {:?}, empty {}", txt , txt.is_empty());
+        //^ &txt =="END"
+        if txt.is_empty()  {
+            println!("Cerrando servicio a cliente");
+            stream.shutdown(Shutdown::Both).unwrap();
+            //y cerramos el loop
             break;
+        };
+
+       
+    task::sleep(Duration::from_secs(1)).await;
+    //LE DEVOLVEMOS AL CLIENTE msg
+    let txt_up = txt.to_uppercase();    
+    let msg = format!("Recibido en el server:{txt_up}");
+    
+    match stream.write(msg.as_bytes()).await {
+        Ok(n) => (),
+        Err(err) => {
+            stream.shutdown(Shutdown::Both).unwrap();
+
         }
 
+     };
+     stream.flush().await.unwrap();
+     }
+}
+
+#[async_std::main]
+async fn main() {
+   let socket_path= "/tmp/rust.socket";
+    let path= Path::new(socket_path);
+    if path.exists(){
+        //Si el archivo existe lo elimino
+        fs::remove_file(path).await.expect("El archivo no
+                                         pudo borrarse , revise los permisos");
     }
 
-   // 
-    stream.shutdown(Shutdown::Both).unwrap();
+    //creo un listener Unix
+   let  listener = UnixListener::bind(socket_path).await.unwrap();
+let mut incoming =listener.incoming();
+ while let Some(stream) = incoming.next().await{
+    match stream {
+        Ok( stream) => {
+            //stream.write_all(b"Hola mundo socket").await.unwrap();
+            task::spawn(handle_client(stream));
 
+
+        },
+        Err(err)=> {
+            eprint!("Error al conectar cliente socket{:?}", err)
+        }
+    }
+ }
 }
