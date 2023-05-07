@@ -1,0 +1,88 @@
+#[warn(unused_imports)]
+use async_std::prelude::*;
+use async_std::{os::unix::net::{UnixListener, UnixStream}, stream};
+use async_std::task;
+use async_std::fs;
+use std::str;
+use std::time::Duration;
+use std::net::Shutdown;
+use std::path::Path;
+
+mod read;
+use read::read_stream;
+
+async fn handle_client(mut stream: UnixStream){
+    /*
+    Tres tareas principales
+    -enviar msg
+    - procesar msg
+    -recibir msg
+    */ 
+    println!("NUevo cliente {:?}", stream.peer_addr().unwrap());
+     stream.write_all(b"Hola mundo socket").await.unwrap();
+     stream.flush().await.unwrap();
+
+    // let mut received = String::new();
+     let mut buffer: [u8; 100] = [0;100];
+    const size:usize=10;
+    let stop: u8 = b'\0';
+    println!("Stop value {}", stop);
+
+     loop {
+        println!("Entrando al loop para este cliente ");
+        //funcion en el mod read.rs que le enviamos el stream de u8 y devuelve un string
+        let  txt = read_stream(&mut stream , size, stop).await;
+        println!("Recibido desde cliente {:?}, empty {}", txt , txt.is_empty());
+        //^ &txt =="END"
+        if txt.is_empty()  {
+            println!("Cerrando servicio a cliente");
+            stream.shutdown(Shutdown::Both).unwrap();
+            //y cerramos el loop
+            break;
+        };
+
+       
+    task::sleep(Duration::from_secs(1)).await;
+    //LE DEVOLVEMOS AL CLIENTE msg
+    let txt_up = txt.to_uppercase();    
+    let msg = format!("Recibido en el server:{txt_up}");
+    
+    match stream.write(msg.as_bytes()).await {
+        Ok(n) => (),
+        Err(err) => {
+            stream.shutdown(Shutdown::Both).unwrap();
+
+        }
+
+     };
+     stream.flush().await.unwrap();
+     }
+}
+
+#[async_std::main]
+async fn main() {
+   let socket_path= "/tmp/rust.socket";
+    let path= Path::new(socket_path);
+    if path.exists(){
+        //Si el archivo existe lo elimino
+        fs::remove_file(path).await.expect("El archivo no
+                                         pudo borrarse , revise los permisos");
+    }
+
+    //creo un listener Unix
+   let  listener = UnixListener::bind(socket_path).await.unwrap();
+let mut incoming =listener.incoming();
+ while let Some(stream) = incoming.next().await{
+    match stream {
+        Ok( stream) => {
+            //stream.write_all(b"Hola mundo socket").await.unwrap();
+            task::spawn(handle_client(stream));
+
+
+        },
+        Err(err)=> {
+            eprint!("Error al conectar cliente socket{:?}", err)
+        }
+    }
+ }
+}
